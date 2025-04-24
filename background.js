@@ -55,32 +55,10 @@ async function checkSales() {
     } catch (e) {
       console.log("No popup active");
     }
-    await notifyAllTabs(storageData);
   } catch (error) {
     console.error("❌ Error checking sales:", error);
   }
 
-}
-
-async function notifyAllTabs(data) {
-  try {
-    const tabs = await chrome.tabs.query({ url: "*://*.whatnot.com/live/*" });
-    console.log(`🔔 Notifying ${tabs.length} tabs about updated sales data`);
-
-    for (const tab of tabs) {
-      try {
-        await chrome.tabs.sendMessage(tab.id, {
-          type: "SALES_UPDATED",
-          data: data
-        });
-        console.log(`✅ Notified tab ${tab.id}`);
-      } catch (err) {
-        console.error(`❌ Failed to notify tab ${tab.id}:`, err);
-      }
-    }
-  } catch (e) {
-    console.error("❌ Error querying tabs:", e);
-  }
 }
 
 function startTracking() {

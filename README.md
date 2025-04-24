@@ -14,9 +14,8 @@ A Chrome extension that tracks total sales in whatnot livestreams, including est
 ## How to Use
 
 1. Go to any Whatnot livestream (URL should look like `https://www.whatnot.com/live/...`)
-2. See overlay in the top right corner of the stream with information
-3. Click the extension icon in your Chrome toolbar
-4. The popup will show:
+2. Click the extension icon in your Chrome toolbar. Pin it for easy use.
+3. The popup will show:
    - Total sales amount
    - Estimated earnings after fees
    - Number of sales
