@@ -1,12 +1,26 @@
-// background.js
 const storage = chrome.storage.local;
 let lastTotal = 0;
 let currentLivestreamId = null;
-let checkInterval = null;
-const UPDATE_INTERVAL = 10000; // 10 seconds
 
-// Function to check for new sales
+async function getCurrentLivestreamId() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const url = new URL(tab.url);
+    if (url.hostname === 'www.whatnot.com' && url.pathname.includes('/live/')) {
+      const livestreamId = url.pathname.split('/').pop();
+      console.log("📺 Found livestream ID:", livestreamId);
+      return livestreamId;
+    }
+    return null;
+  } catch (error) {
+    console.error("❌ Error getting livestream ID:", error);
+    return null;
+  }
+}
+
 async function checkSales() {
+  currentLivestreamId = await getCurrentLivestreamId();
+
   if (!currentLivestreamId) {
     console.log("⚠️ No livestream ID available");
     return;
@@ -16,64 +30,62 @@ async function checkSales() {
 
   try {
     const allSales = await fetchAllSales(currentLivestreamId);
+
     const total = calculateTotal(allSales);
     const totalAfterFees = calculateTotalAfterFees(allSales);
     const salesCount = allSales.length;
 
     console.log(`📊 Found ${salesCount} sales, total: $${total}`);
 
-    if (total !== lastTotal) {
-      console.log(`💵 Total sales updated from $${lastTotal} to $${total}`);
-      lastTotal = total;
+    const storageData = {
+      totalSales: total.toFixed(0),
+      estimatedTotalAfterFees: totalAfterFees.toFixed(2),
+      lastUpdated: new Date().toISOString(),
+      salesCount: salesCount,
+    };
 
-      const storageData = {
-        totalSales: total.toFixed(0),
-        estimatedTotalAfterFees: totalAfterFees.toFixed(2),
-        lastUpdated: new Date().toISOString(),
-        salesCount: salesCount,
-      };
+    await storage.set(storageData);
 
-      await storage.set(storageData);
+    try {
+      chrome.runtime.sendMessage({
+        type: "SALES_UPDATED",
+        data: storageData,
+      });
 
-      // Notify popup
-      try {
-        chrome.runtime.sendMessage({
-          type: "SALES_UPDATED",
-          data: storageData,
-        });
-      } catch (e) {
-        console.log("No popup active");
-      }
-    } else {
-      console.log("💤 No change in total sales");
+    } catch (e) {
+      console.log("No popup active");
     }
+    await notifyAllTabs(storageData);
   } catch (error) {
     console.error("❌ Error checking sales:", error);
+  }
+
+}
+
+async function notifyAllTabs(data) {
+  try {
+    const tabs = await chrome.tabs.query({ url: "*://*.whatnot.com/live/*" });
+    console.log(`🔔 Notifying ${tabs.length} tabs about updated sales data`);
+
+    for (const tab of tabs) {
+      try {
+        await chrome.tabs.sendMessage(tab.id, {
+          type: "SALES_UPDATED",
+          data: data
+        });
+        console.log(`✅ Notified tab ${tab.id}`);
+      } catch (err) {
+        console.error(`❌ Failed to notify tab ${tab.id}:`, err);
+      }
+    }
+  } catch (e) {
+    console.error("❌ Error querying tabs:", e);
   }
 }
 
 function startTracking() {
   console.log("🚀 Starting sales tracking...");
-
-  // Clear any existing interval
-  if (checkInterval) {
-    clearInterval(checkInterval);
-  }
-
-  // Perform initial check
   checkSales();
-
-  // Set up interval for future checks
-  checkInterval = setInterval(checkSales, UPDATE_INTERVAL);
-  console.log("⏰ Set check interval to", UPDATE_INTERVAL / 1000, "seconds");
-}
-
-function stopTracking() {
-  if (checkInterval) {
-    clearInterval(checkInterval);
-    checkInterval = null;
-    console.log("🛑 Stopped sales tracking");
-  }
 }
 
 async function fetchAllSales(livestreamId) {
@@ -111,6 +123,7 @@ async function fetchAllSales(livestreamId) {
                   }
                   edges {
                     node {
+                      title
                       price {
                         amount
                         currency
@@ -134,7 +147,7 @@ async function fetchAllSales(livestreamId) {
       after = pageInfo.endCursor;
 
       if (hasNextPage) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 200));
       }
     } catch (error) {
       console.error("❌ Error fetching page:", error);
@@ -160,62 +173,34 @@ function calculateTotalAfterFees(edges) {
   }, 0);
 }
 
-// Listen for the initial request to get livestream ID
-chrome.webRequest.onBeforeRequest.addListener(
-  async (details) => {
-    if (
-      details.url.includes("graphql/?operationName=LivestreamShop") &&
-      details.method === "POST"
-    ) {
-      try {
-        const requestBody = JSON.parse(
-          decodeURIComponent(
-            String.fromCharCode.apply(
-              null,
-              new Uint8Array(details.requestBody.raw[0].bytes)
-            )
-          )
-        );
-
-        if (requestBody.variables?.tab === "SOLD") {
-          const newLivestreamId = requestBody.variables.livestreamId;
-
-          if (newLivestreamId !== currentLivestreamId) {
-            console.log("🎯 New livestream detected:", newLivestreamId);
-            currentLivestreamId = newLivestreamId;
-            lastTotal = 0;
-            startTracking();
-          }
-        }
-      } catch (error) {
-        console.error("❌ Error processing request:", error);
-      }
-    }
-  },
-  { urls: ["*://*.whatnot.com/*"] },
-  ["requestBody"]
-);
-
-// Handle popup messages
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  console.log("📨 Received message:", request.type, "from:", sender?.tab?.id || "popup");
+
   if (request.type === "GET_TOTAL") {
     storage.get(
       ["totalSales", "estimatedTotalAfterFees", "lastUpdated", "salesCount"],
       (result) => {
+        console.log("📤 Sending current data:", result);
         sendResponse(result);
       }
     );
+
+    checkSales();
     return true;
   }
 
   if (request.type === "FORCE_UPDATE") {
-    checkSales();
-    sendResponse({ status: "Updating..." });
+    checkSales().then(() => {
+      sendResponse({ status: "Updating..." });
+    });
     return true;
   }
 });
 
-// Clean up when extension is unloaded
-chrome.runtime.onSuspend.addListener(() => {
-  stopTracking();
+chrome.runtime.onConnect.addListener((port) => {
+  console.log("🔌 Content script connected:", port.name);
+
+  port.onDisconnect.addListener(() => {
+    console.log("🔌 Content script disconnected:", port.name);
+  });
 });

@@ -3,7 +3,10 @@ const storage = chrome.storage.local;
 document.addEventListener("DOMContentLoaded", () => {
   console.log("🚀 Popup opened");
   setupDisplay();
-  loadData();
+
+  chrome.runtime.sendMessage({ type: "FORCE_UPDATE" });
+
+  chrome.runtime.sendMessage({ type: "GET_TOTAL" }, updateDisplay);
 });
 
 function setupDisplay() {
@@ -54,9 +57,7 @@ function updateDisplay(data) {
   if (!data) return;
 
   const totalElement = document.getElementById("totalSales");
-  const estimatedTotalAfterFeesElement = document.getElementById(
-    "estimatedTotalAfterFees"
-  );
+  const estimatedTotalAfterFeesElement = document.getElementById("estimatedTotalAfterFees");
   const lastUpdatedElement = document.getElementById("lastUpdated");
   const salesCountElement = document.getElementById("salesCount");
 
@@ -69,9 +70,7 @@ function updateDisplay(data) {
   }
 
   if (data.estimatedTotalAfterFees) {
-    const formattedTotal = parseFloat(
-      data.estimatedTotalAfterFees
-    ).toLocaleString("en-US", {
+    const formattedTotal = parseFloat(data.estimatedTotalAfterFees).toLocaleString("en-US", {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
@@ -84,11 +83,10 @@ function updateDisplay(data) {
 
   if (data.lastUpdated) {
     const date = new Date(data.lastUpdated);
-    lastUpdatedElement.textContent = `Last updated: ${date.toLocaleTimeString()}`;
+    lastUpdatedElement.textContent = `Last updated: ${date.toLocaleTimeString()}${data.isPartial ? ' (Loading...)' : ''}`;
   }
 }
 
-// Listen for live updates
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "SALES_UPDATED") {
     updateDisplay(message.data);
