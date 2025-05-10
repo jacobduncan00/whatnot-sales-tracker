@@ -4,7 +4,7 @@ A Chrome extension that tracks total sales in whatnot livestreams, including est
 
 ## Installation
 
-1. Download this repository to your computer as a zip file
+1. Download this repository to your computer as a zip file (click green code button >> download zip)
 2. Unzip the file
 3. Open Chrome and go to `chrome://extensions/`
 4. Enable "Developer mode" in the top right corner
