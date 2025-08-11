@@ -3,23 +3,16 @@
   "name": "Whatnot Sales Tracker",
   "version": "1.0",
   "description": "Track total sales in Whatnot livestreams",
-  "permissions": [
-    "webRequest",
-    "tabs",
-    "storage",
-    "activeTab",
-    "webRequestBlocking",
-    "downloads",
-    "scripting",
-    "history"
-  ],
-  "host_permissions": [
-    "*://*.whatnot.com/*"
+  "permissions": ["tabs"],
+  "host_permissions": ["*://*.whatnot.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.whatnot.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
   ],
   "action": {
     "default_popup": "popup.html"
-  },
-  "background": {
-    "service_worker": "background.js"
   }
 }

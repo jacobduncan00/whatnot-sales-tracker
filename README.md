@@ -1,33 +1,36 @@
 # Whatnot Sales Tracker
 
-A Chrome extension that tracks total sales in whatnot livestreams, including estimated earnings after fees.
+Lightweight Chrome extension that automatically shows total sales and estimated after-fee earnings directly on Whatnot livestream pages. No clicks required.
 
 ## Installation
 
-1. Download this repository to your computer as a zip file (click green code button >> download zip)
-2. Unzip the file
-3. Open Chrome and go to `chrome://extensions/`
-4. Enable "Developer mode" in the top right corner
-5. Click "Load unpacked" in the top left corner
-6. Select the unzipped folder (do not double click into it, just select the folder)
+1. Download this repository as a ZIP and unzip it (or clone it)
+2. In Chrome, open `chrome://extensions/`
+3. Enable Developer mode (top-right)
+4. Click "Load unpacked" and select the project folder
 
-## How to Use
+## How it works
 
-1. Go to any Whatnot livestream (URL should look like `https://www.whatnot.com/live/...`)
-2. Click the extension icon in your Chrome toolbar. Pin it for easy use.
-3. The popup will show:
-   - Total sales amount
-   - Estimated earnings after fees
-   - Number of sales
-   - Last update time
+- When you visit a Whatnot livestream (`https://www.whatnot.com/live/...`), the extension injects a small widget into the left panel, directly under the stream title.
+- It fetches sold items via Whatnot's GraphQL API (using your browser session), totals them up, and shows:
+  - Total Sales
+  - Estimated After Fees
+  - Items Sold
+- The widget updates automatically every 10 seconds and stays in place even as the page UI updates or you navigate between streams.
 
-## Features
+## Popup behavior
 
-- Automatically tracks all sales in the current livestream
-- Calculates estimated earnings after Whatnot and processing fees
-- Updates in real-time
-- Works on any Whatnot livestream page
+- The popup is intentionally minimal. It only shows whether tracking is currently running for the active tab:
+  - "Whatnot Sales Tracker is currently running" when you're on a livestream page.
+  - "Whatnot Sales Tracker is not currently running" otherwise.
 
-## Note
+## Permissions
 
-The extension needs to be on a Whatnot livestream page to work. If you're not on a livestream page, you'll see a message saying "No livestream ID available".
+- `tabs`: required so the popup can detect whether the active tab is a livestream page.
+- Host access to `*.whatnot.com` so the content script can run and fetch sales while you are on Whatnot.
+
+## Notes & troubleshooting
+
+- If you don't see the widget, refresh the page once after installing or reloading the extension.
+- The widget appears just under the stream title in the left sidebar. If Whatnot significantly changes their DOM/CSS, selectors may need to be updated.
+- Totals are estimates and use an 8% Whatnot fee and 2.9% - $0.30 processing fee per item.

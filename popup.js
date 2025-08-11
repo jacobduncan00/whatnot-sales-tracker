@@ -1,94 +1,36 @@
-const storage = chrome.storage.local;
+document.addEventListener("DOMContentLoaded", async () => {
+  try {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    const url = new URL(tab?.url || "");
+    const isRunning =
+      url.hostname.endsWith("whatnot.com") && url.pathname.includes("/live/");
 
-document.addEventListener("DOMContentLoaded", () => {
-  console.log("🚀 Popup opened");
-  setupDisplay();
+    const title = document.getElementById("title");
+    const desc = document.getElementById("desc");
+    const dot = document.getElementById("dot");
 
-  chrome.runtime.sendMessage({ type: "FORCE_UPDATE" });
-
-  chrome.runtime.sendMessage({ type: "GET_TOTAL" }, updateDisplay);
-});
-
-function setupDisplay() {
-  const container = document.createElement("div");
-  container.className = "stats-container";
-
-  container.innerHTML = `
-    <div class="label">Total Sales</div>
-    <div class="total">$<span id="totalSales">0.00</span></div>
-    <div class="total-after-fees-label">Estimated Total After Fees</div>
-    <div class="total-after-fees">$<span id="estimatedTotalAfterFees">0.00</span></div>
-    <div class="sales-count">Items Sold: <span id="salesCount">0</span></div>
-    <div id="lastUpdated" class="timestamp">Not yet updated</div>
-  `;
-
-  document.body.appendChild(container);
-
-  const refreshButton = document.createElement("button");
-  refreshButton.textContent = "Refresh";
-  refreshButton.className = "refresh-button";
-  refreshButton.onclick = forceRefresh;
-  document.body.appendChild(refreshButton);
-}
-
-function forceRefresh() {
-  const button = document.querySelector(".refresh-button");
-  button.disabled = true;
-  button.textContent = "Updating...";
-
-  chrome.runtime.sendMessage({ type: "FORCE_UPDATE" }, () => {
-    setTimeout(() => {
-      loadData();
-      button.disabled = false;
-      button.textContent = "Refresh";
-    }, 2000);
-  });
-}
-
-function loadData() {
-  chrome.runtime.sendMessage({ type: "GET_TOTAL" }, (response) => {
-    if (response) {
-      updateDisplay(response);
+    if (isRunning) {
+      title.textContent = "Whatnot Sales Tracker is currently running";
+      desc.textContent =
+        "This stream is being tracked and totals are shown on-page.";
+      dot.classList.remove("off");
+      dot.classList.add("on");
+    } else {
+      title.textContent = "Whatnot Sales Tracker is not currently running";
+      desc.textContent =
+        "Open a Whatnot livestream page to start tracking automatically.";
+      dot.classList.remove("on");
+      dot.classList.add("off");
     }
-  });
-}
-
-function updateDisplay(data) {
-  if (!data) return;
-
-  const totalElement = document.getElementById("totalSales");
-  const estimatedTotalAfterFeesElement = document.getElementById("estimatedTotalAfterFees");
-  const lastUpdatedElement = document.getElementById("lastUpdated");
-  const salesCountElement = document.getElementById("salesCount");
-
-  if (data.totalSales) {
-    const formattedTotal = parseFloat(data.totalSales).toLocaleString("en-US", {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    });
-    totalElement.textContent = formattedTotal;
-  }
-
-  if (data.estimatedTotalAfterFees) {
-    const formattedTotal = parseFloat(data.estimatedTotalAfterFees).toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
-    estimatedTotalAfterFeesElement.textContent = formattedTotal;
-  }
-
-  if (data.salesCount) {
-    salesCountElement.textContent = data.salesCount;
-  }
-
-  if (data.lastUpdated) {
-    const date = new Date(data.lastUpdated);
-    lastUpdatedElement.textContent = `Last updated: ${date.toLocaleTimeString()}${data.isPartial ? ' (Loading...)' : ''}`;
-  }
-}
-
-chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === "SALES_UPDATED") {
-    updateDisplay(message.data);
+  } catch (e) {
+    const title = document.getElementById("title");
+    const desc = document.getElementById("desc");
+    if (title) title.textContent = "Unable to read current tab";
+    if (desc)
+      desc.textContent =
+        "Please make sure the popup has access to the active tab.";
   }
 });
