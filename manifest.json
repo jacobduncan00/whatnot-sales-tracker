@@ -5,13 +5,6 @@
   "description": "Track total sales in Whatnot livestreams",
   "permissions": ["tabs"],
   "host_permissions": ["*://*.whatnot.com/*"],
-  "content_scripts": [
-    {
-      "matches": ["*://*.whatnot.com/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "action": {
     "default_popup": "popup.html"
   }

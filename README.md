@@ -1,6 +1,6 @@
 # Whatnot Sales Tracker
 
-Lightweight Chrome extension that automatically shows total sales and estimated after-fee earnings directly on Whatnot livestream pages. No clicks required.
+Lightweight Chrome extension that shows total sales and estimated after-fee earnings for Whatnot livestreams. All data is displayed in the extension popup, making it resilient to Whatnot UI changes.
 
 ## Installation
 
@@ -11,26 +11,29 @@ Lightweight Chrome extension that automatically shows total sales and estimated 
 
 ## How it works
 
-- When you visit a Whatnot livestream (`https://www.whatnot.com/live/...`), the extension injects a small widget into the left panel, directly under the stream title.
-- It fetches sold items via Whatnot's GraphQL API (using your browser session), totals them up, and shows:
-  - Total Sales
-  - Estimated After Fees
-  - Items Sold
-- The widget updates automatically every 10 seconds and stays in place even as the page UI updates or you navigate between streams.
+- Open the extension popup while viewing a Whatnot livestream (`https://www.whatnot.com/live/...`)
+- The extension automatically detects if you're on a livestream page and fetches sales data via Whatnot's GraphQL API
+- It displays:
+  - **Total Sales**: Gross revenue from all sold items
+  - **Est. After Fees**: Estimated earnings after Whatnot fees and payment processing
+  - **Items Sold**: Total number of items sold
+- Data is fetched fresh each time you open the popup
 
 ## Popup behavior
 
-- The popup is intentionally minimal. It only shows whether tracking is currently running for the active tab:
-  - "Whatnot Sales Tracker is currently running" when you're on a livestream page.
-  - "Whatnot Sales Tracker is not currently running" otherwise.
+- Click the extension icon to open the popup
+- If you're on a Whatnot livestream page, it will automatically fetch and display sales data
+- If you're not on a livestream page, it will show an appropriate message
+- The popup shows the last update time for the displayed data
 
 ## Permissions
 
-- `tabs`: required so the popup can detect whether the active tab is a livestream page.
-- Host access to `*.whatnot.com` so the content script can run and fetch sales while you are on Whatnot.
+- `tabs`: required so the popup can detect whether the active tab is a livestream page
+- Host access to `*.whatnot.com` so the popup can fetch sales data via the GraphQL API
 
 ## Notes & troubleshooting
 
-- If you don't see the widget, refresh the page once after installing or reloading the extension.
-- The widget appears just under the stream title in the left sidebar. If Whatnot significantly changes their DOM/CSS, selectors may need to be updated.
-- Totals are estimates and use an 8% Whatnot fee and 2.9% - $0.30 processing fee per item.
+- Make sure you're logged in to Whatnot in your browser for the extension to fetch data
+- The extension no longer injects anything into the Whatnot page, so it won't break when Whatnot updates their UI
+- Totals are estimates and use an 8% Whatnot fee and 2.9% + $0.30 processing fee per item
+- If you see an error, make sure you're on a livestream page and logged in to Whatnot
