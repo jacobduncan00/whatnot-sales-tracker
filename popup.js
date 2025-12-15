@@ -28,7 +28,7 @@ async function fetchAllSales(livestreamId) {
   while (hasNextPage) {
     try {
       const response = await fetch(
-        "https://www.whatnot.com/services/graphql/?operationName=LivestreamShop",
+        "https://www.whatnot.com/services/graphql/?operationName=LiveShopSoldItems",
         {
           method: "POST",
           headers: {
@@ -37,25 +37,30 @@ async function fetchAllSales(livestreamId) {
           },
           credentials: "include",
           body: JSON.stringify({
-            operationName: "LivestreamShop",
+            operationName: "LiveShopSoldItems",
             variables: {
-              livestreamId: livestreamId,
-              tab: "SOLD",
+              liveId: livestreamId,
               first: 50,
               after: after,
             },
             query: `
-              query LivestreamShop($livestreamId: ID!, $tab: ShopTab, $first: Int, $after: String) {
-                liveStream(id: $livestreamId) {
-                  id
-                  shop(tab: $tab, first: $first, after: $after) {
+              query LiveShopSoldItems($liveId: ID!, $first: Int, $after: String) {
+                liveShop(liveId: $liveId) {
+                  soldItems(first: $first, after: $after) {
+                    totalCount
                     pageInfo {
                       hasNextPage
                       endCursor
                     }
                     edges {
                       node {
-                        title
+                        id
+                        listing {
+                          title
+                        }
+                        buyer {
+                          username
+                        }
                         price {
                           amount
                           currency
@@ -71,9 +76,10 @@ async function fetchAllSales(livestreamId) {
       );
 
       const data = await response.json();
-      const liveStream = data?.data?.liveStream;
-      const pageInfo = liveStream?.shop?.pageInfo;
-      const edges = liveStream?.shop?.edges || [];
+      const liveShop = data?.data?.liveShop;
+      const soldItems = liveShop?.soldItems;
+      const pageInfo = soldItems?.pageInfo;
+      const edges = soldItems?.edges || [];
 
       if (!pageInfo) {
         console.error("Unexpected GraphQL response", data);
@@ -111,6 +117,33 @@ function calculateTotalAfterFees(edges) {
   }, 0);
 }
 
+function calculateTopSpenders(edges) {
+  const spenderMap = new Map();
+
+  for (const edge of edges) {
+    const username = edge.node.buyer?.username;
+    if (!username) continue;
+
+    const amount = edge.node.price.amount / 100;
+    const current = spenderMap.get(username) || { total: 0, count: 0 };
+    spenderMap.set(username, {
+      total: current.total + amount,
+      count: current.count + 1,
+    });
+  }
+
+  // Convert to array and sort by total descending
+  const sorted = Array.from(spenderMap.entries())
+    .map(([username, data]) => ({
+      username,
+      total: data.total,
+      count: data.count,
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  return sorted.slice(0, 5); // Top 5 spenders
+}
+
 function formatCurrency(amount) {
   try {
     return new Intl.NumberFormat(undefined, {
@@ -123,7 +156,21 @@ function formatCurrency(amount) {
   }
 }
 
-function updateDisplay({ gross, net, count, updatedAt, isLoading, error }) {
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function updateDisplay({
+  gross,
+  net,
+  count,
+  topSpenders,
+  updatedAt,
+  isLoading,
+  error,
+}) {
   const title = document.getElementById("title");
   const desc = document.getElementById("desc");
   const dot = document.getElementById("dot");
@@ -132,6 +179,8 @@ function updateDisplay({ gross, net, count, updatedAt, isLoading, error }) {
   const countEl = document.getElementById("count");
   const updatedEl = document.getElementById("updated");
   const errorEl = document.getElementById("error");
+  const spendersSection = document.getElementById("spenders-section");
+  const spendersList = document.getElementById("spenders-list");
 
   if (error) {
     title.textContent = "Error";
@@ -142,6 +191,7 @@ function updateDisplay({ gross, net, count, updatedAt, isLoading, error }) {
     if (netEl) netEl.textContent = "$0.00";
     if (countEl) countEl.textContent = "0";
     if (updatedEl) updatedEl.textContent = "—";
+    if (spendersSection) spendersSection.style.display = "none";
     if (errorEl) {
       errorEl.textContent = error;
       errorEl.style.display = "block";
@@ -152,14 +202,15 @@ function updateDisplay({ gross, net, count, updatedAt, isLoading, error }) {
   if (errorEl) errorEl.style.display = "none";
 
   if (isLoading) {
-    title.textContent = "Loading sales data…";
-    desc.textContent = "Fetching from Whatnot…";
+    title.textContent = "Loading sales data";
+    desc.textContent = "Fetching from Whatnot";
     dot.classList.remove("on");
     dot.classList.add("off");
     if (grossEl) grossEl.textContent = "—";
     if (netEl) netEl.textContent = "—";
     if (countEl) countEl.textContent = "—";
     if (updatedEl) updatedEl.textContent = "—";
+    if (spendersSection) spendersSection.style.display = "none";
     return;
   }
 
@@ -173,8 +224,42 @@ function updateDisplay({ gross, net, count, updatedAt, isLoading, error }) {
   if (countEl) countEl.textContent = String(count);
   if (updatedEl) {
     updatedEl.textContent = updatedAt
-      ? new Date(updatedAt).toLocaleTimeString()
+      ? `Updated: ${new Date(updatedAt).toLocaleTimeString()}`
       : "—";
+  }
+
+  // Update top spenders
+  if (spendersSection && spendersList && topSpenders) {
+    if (topSpenders.length === 0) {
+      spendersSection.style.display = "none";
+    } else {
+      spendersSection.style.display = "block";
+      spendersList.innerHTML = "";
+
+      topSpenders.forEach((spender, index) => {
+        const li = document.createElement("li");
+        li.className = "spender-item";
+
+        const rankClass =
+          index === 0
+            ? "gold"
+            : index === 1
+            ? "silver"
+            : index === 2
+            ? "bronze"
+            : "";
+        const itemLabel = spender.count === 1 ? "item" : "items";
+
+        li.innerHTML = `
+          <span class="rank ${rankClass}">${index + 1}</span>
+          <span class="username">@${escapeHtml(spender.username)}</span>
+          <span class="item-count">${spender.count} ${itemLabel}</span>
+          <span class="amount">${formatCurrency(spender.total)}</span>
+        `;
+
+        spendersList.appendChild(li);
+      });
+    }
   }
 }
 
@@ -192,12 +277,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
-    const url = new URL(tab.url);
     const livestreamId = getLivestreamIdFromUrl(tab.url);
 
     if (!livestreamId) {
       updateDisplay({
-        error: "Not on a Whatnot livestream page. Open a livestream to track sales.",
+        error:
+          "Not on a Whatnot livestream page. Open a livestream to track sales.",
       });
       return;
     }
@@ -211,25 +296,29 @@ document.addEventListener("DOMContentLoaded", async () => {
       const gross = calculateTotal(edges);
       const net = calculateTotalAfterFees(edges);
       const count = edges.length;
+      const topSpenders = calculateTopSpenders(edges);
 
       updateDisplay({
         gross,
         net,
         count,
+        topSpenders,
         updatedAt: Date.now(),
         isLoading: false,
       });
     } catch (err) {
       console.error("Error fetching sales data", err);
       updateDisplay({
-        error: "Failed to fetch sales data. Make sure you're logged in to Whatnot.",
+        error:
+          "Failed to fetch sales data. Make sure you're logged in to Whatnot.",
         isLoading: false,
       });
     }
   } catch (e) {
     console.error("Error in popup", e);
     updateDisplay({
-      error: "Unable to read current tab. Please make sure the popup has access to the active tab.",
+      error:
+        "Unable to read current tab. Please make sure the popup has access to the active tab.",
     });
   }
 });
