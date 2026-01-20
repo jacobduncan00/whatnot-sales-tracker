@@ -1,148 +1,5 @@
-const FETCH_PAGE_DELAY_MS = 200; // between GraphQL pages
-
-function getLivestreamIdFromUrl(urlString) {
-  try {
-    const url = new URL(urlString);
-    if (
-      url.hostname.endsWith("whatnot.com") &&
-      url.pathname.includes("/live/")
-    ) {
-      const parts = url.pathname.split("/").filter(Boolean);
-      return parts[parts.length - 1] || null;
-    }
-  } catch (_) {
-    // ignore
-  }
-  return null;
-}
-
-async function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchAllSales(livestreamId) {
-  let allEdges = [];
-  let hasNextPage = true;
-  let after = null;
-
-  while (hasNextPage) {
-    try {
-      const response = await fetch(
-        "https://www.whatnot.com/services/graphql/?operationName=LiveShopSoldItems",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "apollographql-client-name": "web",
-          },
-          credentials: "include",
-          body: JSON.stringify({
-            operationName: "LiveShopSoldItems",
-            variables: {
-              liveId: livestreamId,
-              first: 50,
-              after: after,
-            },
-            query: `
-              query LiveShopSoldItems($liveId: ID!, $first: Int, $after: String) {
-                liveShop(liveId: $liveId) {
-                  soldItems(first: $first, after: $after) {
-                    totalCount
-                    pageInfo {
-                      hasNextPage
-                      endCursor
-                    }
-                    edges {
-                      node {
-                        id
-                        listing {
-                          title
-                        }
-                        buyer {
-                          username
-                        }
-                        price {
-                          amount
-                          currency
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `,
-          }),
-        }
-      );
-
-      const data = await response.json();
-      const liveShop = data?.data?.liveShop;
-      const soldItems = liveShop?.soldItems;
-      const pageInfo = soldItems?.pageInfo;
-      const edges = soldItems?.edges || [];
-
-      if (!pageInfo) {
-        console.error("Unexpected GraphQL response", data);
-        break;
-      }
-
-      allEdges = allEdges.concat(edges);
-      hasNextPage = Boolean(pageInfo.hasNextPage);
-      after = pageInfo.endCursor || null;
-
-      if (hasNextPage) {
-        await sleep(FETCH_PAGE_DELAY_MS);
-      }
-    } catch (error) {
-      console.error("Error fetching sales page", error);
-      break;
-    }
-  }
-
-  return allEdges;
-}
-
-function calculateTotal(edges) {
-  return edges.reduce((sum, edge) => sum + edge.node.price.amount / 100, 0);
-}
-
-function calculateTotalAfterFees(edges) {
-  return edges.reduce((sum, edge) => {
-    const price = edge.node.price.amount / 100;
-    // Assume no taxes or shipping
-    // Fees: 8% commission + (2.9% + $0.30) payment processing
-    const processingFee = price * 0.029 + 0.3;
-    const whatnotFee = price * 0.08;
-    return sum + price - processingFee - whatnotFee;
-  }, 0);
-}
-
-function calculateTopSpenders(edges) {
-  const spenderMap = new Map();
-
-  for (const edge of edges) {
-    const username = edge.node.buyer?.username;
-    if (!username) continue;
-
-    const amount = edge.node.price.amount / 100;
-    const current = spenderMap.get(username) || { total: 0, count: 0 };
-    spenderMap.set(username, {
-      total: current.total + amount,
-      count: current.count + 1,
-    });
-  }
-
-  // Convert to array and sort by total descending
-  const sorted = Array.from(spenderMap.entries())
-    .map(([username, data]) => ({
-      username,
-      total: data.total,
-      count: data.count,
-    }))
-    .sort((a, b) => b.total - a.total);
-
-  return sorted.slice(0, 5); // Top 5 spenders
-}
+// Whatnot Sales Tracker – Popup Script
+// Reads data stored by the content script
 
 function formatCurrency(amount) {
   try {
@@ -263,6 +120,22 @@ function updateDisplay({
   }
 }
 
+function getLivestreamIdFromUrl(urlString) {
+  try {
+    const url = new URL(urlString);
+    if (
+      url.hostname.endsWith("whatnot.com") &&
+      url.pathname.includes("/live/")
+    ) {
+      const parts = url.pathname.split("/").filter(Boolean);
+      return parts[parts.length - 1] || null;
+    }
+  } catch (_) {
+    // ignore
+  }
+  return null;
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   try {
     const [tab] = await chrome.tabs.query({
@@ -290,32 +163,64 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Show loading state
     updateDisplay({ isLoading: true });
 
-    // Fetch sales data
+    // Get data from storage (set by content script)
     try {
-      const edges = await fetchAllSales(livestreamId);
-      const gross = calculateTotal(edges);
-      const net = calculateTotalAfterFees(edges);
-      const count = edges.length;
-      const topSpenders = calculateTopSpenders(edges);
+      const stored = await chrome.storage.local.get([
+        "topSpenders",
+        "livestreamId",
+        "lastUpdated",
+        "salesStats",
+      ]);
+
+      console.log("[Whatnot Sales Tracker] Stored data:", stored);
+
+      if (stored.livestreamId !== livestreamId) {
+        updateDisplay({
+          gross: 0,
+          net: 0,
+          count: 0,
+          topSpenders: [],
+          updatedAt: null,
+          isLoading: false,
+          error: "Click the 'Sold' tab on Whatnot to load sales data. The extension intercepts Whatnot's own API calls.",
+        });
+        return;
+      }
+
+      const topSpenders = stored.topSpenders || [];
+      const lastUpdated = stored.lastUpdated;
+      const salesStats = stored.salesStats || { gross: 0, net: 0, count: 0 };
+
+      if (salesStats.count === 0 && !lastUpdated) {
+        updateDisplay({
+          gross: 0,
+          net: 0,
+          count: 0,
+          topSpenders: [],
+          updatedAt: null,
+          isLoading: false,
+          error: "No sales data yet. Click the 'Sold' tab on Whatnot to load data.",
+        });
+        return;
+      }
 
       updateDisplay({
-        gross,
-        net,
-        count,
+        gross: salesStats.gross,
+        net: salesStats.net,
+        count: salesStats.count,
         topSpenders,
-        updatedAt: Date.now(),
+        updatedAt: lastUpdated,
         isLoading: false,
       });
     } catch (err) {
-      console.error("Error fetching sales data", err);
+      console.error("[Whatnot Sales Tracker] Error reading stored data", err);
       updateDisplay({
-        error:
-          "Failed to fetch sales data. Make sure you're logged in to Whatnot.",
+        error: "Failed to read sales data from storage.",
         isLoading: false,
       });
     }
   } catch (e) {
-    console.error("Error in popup", e);
+    console.error("[Whatnot Sales Tracker] Error in popup", e);
     updateDisplay({
       error:
         "Unable to read current tab. Please make sure the popup has access to the active tab.",

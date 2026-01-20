@@ -1,15 +1,13 @@
 // Whatnot Sales Tracker – Content Script
-// Injects live sales totals into the Whatnot livestream page without needing to open the extension popup
+// Intercepts Whatnot's own GraphQL responses to track sales
 
 (function () {
-  const POLL_INTERVAL_MS = 10000; // refresh cadence (10s)
-  const FETCH_PAGE_DELAY_MS = 200; // between GraphQL pages
   const WIDGET_ID = "wn-sales-tracker-widget";
+  const STORAGE_KEY = "wn-sales-tracker-data";
 
   let currentLivestreamId = null;
   let currentUrl = location.href;
-  let pollingTimer = null;
-  let updating = false;
+  let salesData = { edges: [], totalCount: 0 };
 
   function log(...args) {
     console.log("[Whatnot Sales Tracker]", ...args);
@@ -31,107 +29,21 @@
     return null;
   }
 
-  async function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  async function fetchAllSales(livestreamId) {
-    let allEdges = [];
-    let hasNextPage = true;
-    let after = null;
-
-    while (hasNextPage) {
-      try {
-        const response = await fetch(
-          "https://www.whatnot.com/services/graphql/?operationName=LiveShopSoldItems",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "apollographql-client-name": "web",
-            },
-            credentials: "include",
-            body: JSON.stringify({
-              operationName: "LiveShopSoldItems",
-              variables: {
-                liveId: livestreamId,
-                first: 50,
-                after: after,
-              },
-              query: `
-                query LiveShopSoldItems($liveId: ID!, $first: Int, $after: String) {
-                  liveShop(liveId: $liveId) {
-                    soldItems(first: $first, after: $after) {
-                      totalCount
-                      pageInfo {
-                        hasNextPage
-                        endCursor
-                      }
-                      edges {
-                        node {
-                          id
-                          listing {
-                            title
-                          }
-                          buyer {
-                            username
-                          }
-                          price {
-                            amount
-                            currency
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              `,
-            }),
-          }
-        );
-
-        const data = await response.json();
-        const liveShop = data?.data?.liveShop;
-        const soldItems = liveShop?.soldItems;
-        const pageInfo = soldItems?.pageInfo;
-        const edges = soldItems?.edges || [];
-
-        if (!pageInfo) {
-          log("Unexpected GraphQL response", data);
-          break;
-        }
-
-        allEdges = allEdges.concat(edges);
-        hasNextPage = Boolean(pageInfo.hasNextPage);
-        after = pageInfo.endCursor || null;
-
-        if (hasNextPage) {
-          await sleep(FETCH_PAGE_DELAY_MS);
-        }
-      } catch (error) {
-        console.error(
-          "[Whatnot Sales Tracker] Error fetching sales page",
-          error
-        );
-        break;
-      }
-    }
-
-    return allEdges;
-  }
-
   function calculateTotal(edges) {
-    return edges.reduce((sum, edge) => sum + edge.node.price.amount / 100, 0);
+    return edges.reduce((sum, edge) => {
+      const price = edge?.node?.price?.amount;
+      return sum + (typeof price === "number" ? price / 100 : 0);
+    }, 0);
   }
 
   function calculateTotalAfterFees(edges) {
     return edges.reduce((sum, edge) => {
-      const price = edge.node.price.amount / 100;
-      // Assume no taxes or shipping
-      // Fees: 8% commission + (2.9% + $0.30) payment processing
-      const processingFee = price * 0.029 + 0.3;
-      const whatnotFee = price * 0.08;
-      return sum + price - processingFee - whatnotFee;
+      const price = edge?.node?.price?.amount;
+      if (typeof price !== "number") return sum;
+      const priceInDollars = price / 100;
+      const processingFee = priceInDollars * 0.029 + 0.3;
+      const whatnotFee = priceInDollars * 0.08;
+      return sum + priceInDollars - processingFee - whatnotFee;
     }, 0);
   }
 
@@ -139,18 +51,20 @@
     const spenderMap = new Map();
 
     for (const edge of edges) {
-      const username = edge.node.buyer?.username;
+      const username = edge?.node?.buyer?.username;
       if (!username) continue;
 
-      const amount = edge.node.price.amount / 100;
+      const amount = edge?.node?.price?.amount;
+      if (typeof amount !== "number") continue;
+
+      const amountInDollars = amount / 100;
       const current = spenderMap.get(username) || { total: 0, count: 0 };
       spenderMap.set(username, {
-        total: current.total + amount,
+        total: current.total + amountInDollars,
         count: current.count + 1,
       });
     }
 
-    // Convert to array and sort by total descending
     const sorted = Array.from(spenderMap.entries())
       .map(([username, data]) => ({
         username,
@@ -159,19 +73,7 @@
       }))
       .sort((a, b) => b.total - a.total);
 
-    return sorted.slice(0, 5); // Top 5 spenders
-  }
-
-  async function storeTopSpenders(topSpenders, livestreamId) {
-    try {
-      await chrome.storage.local.set({
-        topSpenders,
-        livestreamId,
-        lastUpdated: Date.now(),
-      });
-    } catch (e) {
-      log("Failed to store top spenders", e);
-    }
+    return sorted.slice(0, 5);
   }
 
   function formatCurrency(amount) {
@@ -189,20 +91,28 @@
   function createWidgetElement() {
     const container = document.createElement("div");
     container.id = WIDGET_ID;
-    container.style.display = "flex";
-    container.style.flexDirection = "column";
-    container.style.gap = "6px";
-    container.style.padding = "12px";
-    container.style.margin = "8px 0";
-    container.style.border = "1px solid rgba(197,199,214,0.2)";
-    container.style.borderRadius = "8px";
-    container.style.background = "#0d0d0d";
-    container.style.color = "#fff";
+    container.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 999999;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 12px;
+      border: 1px solid rgba(197,199,214,0.3);
+      border-radius: 8px;
+      background: #1a1a1a;
+      color: #fff;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      font-family: Inter, system-ui, sans-serif;
+      min-width: 200px;
+    `;
 
     container.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between;">
         <span style="font-family:Poppins, Inter, system-ui, -apple-system, Segoe UI, Roboto; font-weight:700; font-size:14px; letter-spacing:-0.2px;">Sales Tracker</span>
-        <span id="${WIDGET_ID}-status" style="font-family:Inter; font-size:11px; color:#999;">—</span>
+        <span id="${WIDGET_ID}-status" style="font-family:Inter; font-size:11px; color:#999;">Listening...</span>
       </div>
       <div style="display:flex; flex-direction:column; gap:4px;">
         <div style="display:flex; justify-content:space-between;">
@@ -218,57 +128,31 @@
           <strong id="${WIDGET_ID}-count" style="font-family:Poppins; font-size:13px;">0</strong>
         </div>
       </div>
+      <div id="${WIDGET_ID}-loading" style="margin-top:6px; font-size:11px; color:#888;">Loading sales data...</div>
     `;
 
     return container;
   }
 
-  function findTitleElement() {
-    // Prefer an h3 inside the same container that has the Breaks/Auction tabs
-    const candidates = document.querySelectorAll(
-      'h3.MuiTypography-h3, h3[class*="MuiTypography-h3"]'
-    );
-    for (const h3 of candidates) {
-      const container = h3.parentElement;
-      if (!container) continue;
-      const hasTabs = container.querySelector(
-        'h5[data-cy="Breaks"], h5[data-cy="Auction"], h5[data-cy="Sold"]'
-      );
-      if (hasTabs) return h3;
-    }
-
-    // Fallback: ascend from any tab to find a nearby h3
-    const tabEl = document.querySelector(
-      'h5[data-cy="Breaks"], h5[data-cy="Auction"], h5[data-cy="Sold"]'
-    );
-    if (tabEl) {
-      let el = tabEl.parentElement;
-      while (el && el !== document.body) {
-        const h3 = el.querySelector(
-          'h3.MuiTypography-h3, h3[class*="MuiTypography-h3"]'
-        );
-        if (h3) return h3;
-        el = el.parentElement;
-      }
-    }
-    return null;
-  }
-
   function ensureWidgetMounted() {
     const existing = document.getElementById(WIDGET_ID);
-    if (existing) return existing;
+    if (existing) {
+      return existing;
+    }
 
-    const titleEl = findTitleElement();
-    if (!titleEl) return null; // Do not inject anywhere else; wait until title exists
-
+    log("Mounting floating widget");
     const widget = createWidgetElement();
-    titleEl.insertAdjacentElement("afterend", widget);
+    document.body.appendChild(widget);
     return widget;
   }
 
   function updateWidget({ gross, net, count, updatedAt }) {
     const widget = ensureWidgetMounted();
-    if (!widget) return; // not yet ready to mount
+    if (!widget) {
+      log("Widget not mounted, cannot update");
+      return;
+    }
+    log("Updating widget with", count, "items");
     const grossEl = widget.querySelector(`#${CSS.escape(WIDGET_ID)}-gross`);
     const netEl = widget.querySelector(`#${CSS.escape(WIDGET_ID)}-net`);
     const countEl = widget.querySelector(`#${CSS.escape(WIDGET_ID)}-count`);
@@ -280,51 +164,78 @@
     if (statusEl)
       statusEl.textContent = updatedAt
         ? new Date(updatedAt).toLocaleTimeString()
-        : "—";
+        : "Listening...";
   }
 
-  async function refreshOnce() {
-    const livestreamId = getLivestreamIdFromUrl(location.href);
-    if (!livestreamId) {
-      log("Not on a Whatnot livestream page; skipping.");
-      return;
-    }
+  function processNewSalesData(edges) {
+    // Merge new edges with existing ones, avoiding duplicates by id
+    const existingIds = new Set(salesData.edges.map((e) => e?.node?.id));
+    const newEdges = edges.filter((e) => e?.node?.id && !existingIds.has(e.node.id));
 
-    if (updating) {
-      return; // avoid overlapping fetches
+    if (newEdges.length > 0) {
+      salesData.edges = [...salesData.edges, ...newEdges];
+      log(`Added ${newEdges.length} new sales. Total: ${salesData.edges.length}`);
     }
-    updating = true;
+  }
 
+  function handleGraphQLResponse(data) {
     try {
-      const edges = await fetchAllSales(livestreamId);
-      const gross = calculateTotal(edges);
-      const net = calculateTotalAfterFees(edges);
-      const count = edges.length;
-      const topSpenders = calculateTopSpenders(edges);
+      // Check if this is a full load (replaces all data)
+      const isFullLoad = data?._isFullLoad;
 
-      updateWidget({ gross, net, count, updatedAt: Date.now() });
-      await storeTopSpenders(topSpenders, livestreamId);
-    } catch (err) {
-      console.error("[Whatnot Sales Tracker] Error updating totals", err);
-    } finally {
-      updating = false;
+      // Handle LiveShopSold response
+      const soldItems = data?.data?.liveShop?.soldItems;
+      if (soldItems?.edges && Array.isArray(soldItems.edges)) {
+        log("Received", soldItems.edges.length, "items", isFullLoad ? "(full load)" : "(incremental)");
+
+        if (isFullLoad) {
+          // Replace all data
+          salesData.edges = soldItems.edges;
+          log("Full load complete:", salesData.edges.length, "total items");
+        } else if (soldItems.edges.length > 0) {
+          // Incremental update - add new items
+          processNewSalesData(soldItems.edges);
+        }
+
+        // Update display
+        const gross = calculateTotal(salesData.edges);
+        const net = calculateTotalAfterFees(salesData.edges);
+        const count = salesData.edges.length;
+        const topSpenders = calculateTopSpenders(salesData.edges);
+
+        updateWidget({ gross, net, count, updatedAt: Date.now() });
+
+        // Store data
+        chrome.storage.local.set({
+          topSpenders,
+          livestreamId: currentLivestreamId,
+          lastUpdated: Date.now(),
+          salesStats: { gross, net, count },
+        }).catch(e => log("Failed to store data", e));
+
+        // Update loading status
+        const loadingEl = document.querySelector(`#${CSS.escape(WIDGET_ID)}-loading`);
+        if (loadingEl) {
+          loadingEl.textContent = `Live • Polling every 15s`;
+          loadingEl.style.color = "#4ade80";
+        }
+      }
+    } catch (e) {
+      log("Error processing GraphQL response:", e);
     }
   }
 
-  function startPolling() {
-    stopPolling();
-    pollingTimer = setInterval(refreshOnce, POLL_INTERVAL_MS);
-  }
-
-  function stopPolling() {
-    if (pollingTimer) {
-      clearInterval(pollingTimer);
-      pollingTimer = null;
-    }
+  // Inject script into page to intercept fetch/XHR
+  function injectInterceptor() {
+    const script = document.createElement("script");
+    script.src = chrome.runtime.getURL("injector.js");
+    script.onload = function() {
+      this.remove();
+    };
+    (document.head || document.documentElement).appendChild(script);
   }
 
   function observeDomForSidebar() {
-    // Re-ensure the widget is attached if the sidebar re-renders (SPA behavior)
     const observer = new MutationObserver(() => {
       if (!document.getElementById(WIDGET_ID)) {
         ensureWidgetMounted();
@@ -337,30 +248,60 @@
   }
 
   function observeUrlChanges() {
-    // Handle SPA navigations where location.href changes without reload
     setInterval(() => {
       if (location.href !== currentUrl) {
         currentUrl = location.href;
         const newId = getLivestreamIdFromUrl(currentUrl);
         if (newId !== currentLivestreamId) {
           currentLivestreamId = newId;
-          // Clear and re-mount widget on stream change
+          salesData = { edges: [], totalCount: 0 }; // Reset data for new stream
           const existing = document.getElementById(WIDGET_ID);
           if (existing) existing.remove();
           ensureWidgetMounted();
-          refreshOnce();
         }
       }
     }, 1000);
   }
 
-  async function init() {
+  function init() {
+    log("Content script initialized");
+    log("Current URL:", location.href);
     currentLivestreamId = getLivestreamIdFromUrl(location.href);
+    log("Detected livestreamId:", currentLivestreamId);
+
+    if (!currentLivestreamId) {
+      log("Not on a livestream page, exiting");
+      return;
+    }
+
+    // Listen for intercepted data from page script
+    window.addEventListener("whatnot-sales-tracker-data", (event) => {
+      try {
+        const data = JSON.parse(event.detail);
+        handleGraphQLResponse(data);
+      } catch (e) {
+        log("Error parsing intercepted data:", e);
+      }
+    });
+
+    // Listen for button reset (when load fails due to no headers)
+    window.addEventListener("whatnot-sales-tracker-reset-button", () => {
+      const loadAllBtn = document.querySelector(`#${CSS.escape(WIDGET_ID)}-load-all`);
+      if (loadAllBtn) {
+        loadAllBtn.textContent = "Load All Sales";
+        loadAllBtn.disabled = false;
+        loadAllBtn.style.background = "#5c5cff";
+      }
+    });
+
+    // Inject the network interceptor into the page
+    injectInterceptor();
+
     ensureWidgetMounted();
     observeDomForSidebar();
     observeUrlChanges();
-    await refreshOnce();
-    startPolling();
+
+    log("Sales tracker ready - will auto-load once headers are captured");
   }
 
   if (document.readyState === "loading") {
